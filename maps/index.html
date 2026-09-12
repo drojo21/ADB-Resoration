@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16181d">
+<title>ADB Restoration — Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{
+    --ink:#16181d; --ink-soft:#5a6270; --paper:#fff; --field:#f1f3f6; --line:#d7dbe2;
+    --pothole:#d94336; --concrete:#3682d9; --go:#ffb020; --good:#1e7d4f; --bad:#c9372c;
+    --geo:#2a4d8f;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:var(--paper);color:var(--ink);
+    font:500 16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  body{display:flex;flex-direction:column}
+
+  header{
+    background:var(--ink);color:#fff;padding:12px 14px;
+    display:flex;align-items:center;gap:8px;flex:none;
+  }
+  header h1{font-size:17px;font-weight:700;margin:0;letter-spacing:-.01em;white-space:nowrap}
+  header .count{font-size:13px;color:#9aa3b2;margin-left:auto;text-align:right;line-height:1.3}
+  header .tool{
+    background:#2b2f38;border:none;color:#fff;border-radius:8px;text-decoration:none;
+    width:44px;height:44px;font-size:19px;flex:none;
+    display:flex;align-items:center;justify-content:center;
+  }
+  #reload[aria-busy=true]{opacity:.5}
+
+  .bar{
+    display:flex;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);
+    align-items:center;flex:none;overflow-x:auto;
+  }
+  select{
+    font:inherit;font-size:16px;padding:11px 12px;border-radius:9px;
+    border:1px solid var(--line);background:var(--field);color:var(--ink);
+    min-width:170px;flex:none;
+  }
+  .toggle{
+    display:flex;align-items:center;gap:7px;padding:11px 13px;border-radius:9px;
+    border:1px solid var(--line);background:var(--paper);font:inherit;font-size:15px;
+    font-weight:600;color:var(--ink-soft);white-space:nowrap;flex:none;
+  }
+  .toggle .dot{width:12px;height:12px;border-radius:50%;background:currentColor;opacity:.3}
+  .toggle[aria-pressed=true]{color:var(--ink)}
+  .toggle[aria-pressed=true] .dot{opacity:1}
+  .toggle.pothole[aria-pressed=true] .dot{color:var(--pothole)}
+  .toggle.concrete[aria-pressed=true] .dot{color:var(--concrete)}
+
+  #map{flex:1;min-height:0;background:var(--field)}
+
+  .leaflet-popup-content{margin:12px 14px;min-width:210px;font-size:15px}
+  .pop b{font-size:16px}
+  .pop img{width:100%;border-radius:8px;margin:8px 0 6px;background:var(--field);display:block}
+  .pop .line{color:var(--ink-soft);font-size:14px}
+  .pop .src{display:inline-block;font-size:12px;font-weight:700;padding:3px 7px;border-radius:5px;margin-top:6px}
+  .src.stamp{background:#e4f2ea;color:var(--good)}
+  .src.gps{background:#fdf0d9;color:#8a5a00}
+  .src.geocode{background:#e6edfa;color:var(--geo)}
+  .src.manual{background:#e8eaee;color:var(--ink-soft)}
+  .pop a.nav{
+    display:block;text-align:center;margin-top:10px;padding:12px;border-radius:9px;
+    background:var(--ink);color:#fff;text-decoration:none;font-weight:700;
+  }
+  .pop a.photo{display:block;text-align:center;margin-top:6px;color:var(--ink-soft);font-size:14px}
+
+  .note{
+    position:absolute;left:50%;transform:translateX(-50%);bottom:18px;z-index:600;
+    background:var(--ink);color:#fff;padding:11px 16px;border-radius:22px;font-size:14px;
+    box-shadow:0 6px 20px rgba(0,0,0,.28);max-width:90vw;text-align:center;
+  }
+  .setup{padding:24px 18px;max-width:520px;margin:0 auto}
+  .setup input{width:100%;padding:14px;font:inherit;font-size:17px;background:var(--field);
+    border:2px solid transparent;border-radius:10px;margin:10px 0}
+  .setup button{padding:14px 20px;font:inherit;font-weight:700;border:none;
+    border-radius:10px;background:var(--go);color:var(--ink);font-size:17px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ADB Restoration</h1>
+  <div class="count" id="count"></div>
+  <a class="tool" href="/" title="Add photos" aria-label="Add photos">&plus;</a>
+  <button id="reload" class="tool" title="Reload pins" aria-label="Reload pins">&#10227;</button>
+</header>
+
+<div class="bar" id="bar">
+  <select id="poFilter"><option value="">All POs</option></select>
+  <button type="button" class="toggle pothole" data-cat="Pothole Res." aria-pressed="true">
+    <span class="dot"></span>Pothole
+  </button>
+  <button type="button" class="toggle concrete" data-cat="Concrete Res." aria-pressed="true">
+    <span class="dot"></span>Concrete
+  </button>
+</div>
+
+<div id="map"></div>
+
+<div class="setup" id="setup" hidden>
+  <p>Paste the Apps Script web app URL to load your pins. The upload form on this
+     phone uses the same URL, so you only do this once.</p>
+  <input type="url" id="apiUrl" placeholder="https://script.google.com/macros/s/…/exec" inputmode="url">
+  <button id="saveApi">Load map</button>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function () {
+'use strict';
+
+var COLORS = { 'Pothole Res.': '#d94336', 'Concrete Res.': '#3682d9' };
+var TUCSON = [32.2226, -110.9747];
+
+// How much to trust the coordinates, by where they came from. The ring around
+// each pin says it at a glance so nobody drives out to a block-level guess
+// thinking it was read off the photo.
+var RINGS = {
+  stamp:   { color: '#fff',    weight: 2 },
+  geocode: { color: '#2a4d8f', weight: 3 },
+  gps:     { color: '#ffb020', weight: 3 },
+  manual:  { color: '#ffb020', weight: 3 }
+};
+var LABELS = {
+  stamp:   'From photo stamp',
+  geocode: 'From stamped address — block-level',
+  gps:     'Phone location — verify',
+  manual:  'Set by hand'
+};
+
+var $ = function (id) { return document.getElementById(id); };
+var params = new URLSearchParams(location.search);
+var api = params.get('api') || localStorage.getItem('adb.api') || '';
+
+var map, layer, points = [], noteEl = null;
+
+/* ------------------------------------------------------------------ boot */
+
+if (!api) {
+  $('setup').hidden = false;
+  $('map').style.display = 'none';
+  $('bar').style.display = 'none';
+} else {
+  start();
+}
+
+$('saveApi').addEventListener('click', function () {
+  var v = $('apiUrl').value.trim();
+  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(v)) {
+    return alert('That should be the web app URL ending in /exec.');
+  }
+  api = v;
+  localStorage.setItem('adb.api', api);
+  $('setup').hidden = true;
+  $('map').style.display = '';
+  $('bar').style.display = '';
+  start();
+});
+
+function start() {
+  map = L.map('map', { zoomControl: false }).setView(TUCSON, 13);
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 20, attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+  layer = L.layerGroup().addTo(map);
+  load();
+}
+
+/* ------------------------------------------------------------------ data */
+
+$('reload').addEventListener('click', load);
+
+function load() {
+  $('reload').setAttribute('aria-busy', 'true');
+  note('Loading pins…');
+  fetch(api + '?action=points&t=' + Date.now())
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.ok) throw new Error(d.error || 'Feed error');
+      points = d.points.filter(function (p) {
+        return isFinite(p.lat) && isFinite(p.lng);
+      });
+      fillPOs();
+      draw(true);
+      note(points.length ? '' : 'No pins yet. Upload a photo to get started.');
+    })
+    .catch(function (err) {
+      note('Could not load pins — ' + err.message);
+    })
+    .then(function () { $('reload').removeAttribute('aria-busy'); });
+}
+
+function fillPOs() {
+  var sel = $('poFilter'), keep = sel.value;
+  var pos = [];
+  points.forEach(function (p) { if (pos.indexOf(p.po) < 0) pos.push(p.po); });
+  pos.sort();
+  sel.innerHTML = '<option value="">All POs (' + pos.length + ')</option>' +
+    pos.map(function (p) {
+      var n = points.filter(function (x) { return x.po === p; }).length;
+      return '<option value="' + esc(p) + '">' + esc(p) + ' — ' + n + '</option>';
+    }).join('');
+  if (pos.indexOf(keep) >= 0) sel.value = keep;
+}
+
+/* ---------------------------------------------------------------- filter */
+
+$('poFilter').addEventListener('change', function () { draw(true); });
+
+Array.prototype.forEach.call(document.querySelectorAll('.toggle'), function (b) {
+  b.addEventListener('click', function () {
+    b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+    draw(false);
+  });
+});
+
+function visible() {
+  var po = $('poFilter').value;
+  var cats = [];
+  Array.prototype.forEach.call(document.querySelectorAll('.toggle'), function (b) {
+    if (b.getAttribute('aria-pressed') === 'true') cats.push(b.dataset.cat);
+  });
+  return points.filter(function (p) {
+    return (!po || p.po === po) && cats.indexOf(p.category) >= 0;
+  });
+}
+
+/* ------------------------------------------------------------------ draw */
+
+function draw(refit) {
+  var list = visible();
+  layer.clearLayers();
+
+  list.forEach(function (p) {
+    var ring = RINGS[p.source] || RINGS.manual;
+    L.circleMarker([p.lat, p.lng], {
+      radius: 9,
+      color: ring.color,
+      weight: ring.weight,
+      fillColor: COLORS[p.category] || '#777',
+      fillOpacity: 1
+    }).addTo(layer).bindPopup(popup(p), { maxWidth: 280 });
+  });
+
+  var pot = list.filter(function (p) { return p.category === 'Pothole Res.'; }).length;
+  var con = list.length - pot;
+  $('count').innerHTML = list.length + ' pin' + (list.length === 1 ? '' : 's') +
+                         '<br>' + pot + ' pothole · ' + con + ' concrete';
+
+  if (refit && list.length) {
+    map.fitBounds(L.latLngBounds(list.map(function (p) { return [p.lat, p.lng]; })),
+                  { padding: [50, 50], maxZoom: 18 });
+  }
+}
+
+function popup(p) {
+  var nav = 'https://www.google.com/maps/dir/?api=1&destination=' + p.lat + ',' + p.lng;
+  var src = LABELS[p.source] ? p.source : 'manual';
+  return '<div class="pop">' +
+    '<b>' + esc(p.po) + '</b><br>' +
+    '<span class="line">' + esc(p.category) + '</span>' +
+    (p.thumb ? '<img src="' + esc(p.thumb) + '" alt="" loading="lazy">' : '') +
+    (p.address ? '<div class="line">' + esc(p.address) + '</div>' : '') +
+    (p.capturedAt ? '<div class="line">' + esc(p.capturedAt) + '</div>' : '') +
+    (p.note ? '<div class="line">' + esc(p.note) + '</div>' : '') +
+    '<span class="src ' + src + '">' + esc(LABELS[src] || p.source) + '</span>' +
+    '<a class="nav" href="' + nav + '" target="_blank" rel="noopener">Directions</a>' +
+    (p.photo ? '<a class="photo" href="' + esc(p.photo) + '" target="_blank" rel="noopener">Open photo</a>' : '') +
+  '</div>';
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[<>&"]/g, function (c) {
+    return { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c];
+  });
+}
+
+function note(msg) {
+  if (noteEl) { noteEl.remove(); noteEl = null; }
+  if (!msg) return;
+  noteEl = document.createElement('div');
+  noteEl.className = 'note';
+  noteEl.textContent = msg;
+  document.body.appendChild(noteEl);
+  if (/Loading/.test(msg)) return;
+  setTimeout(function () { if (noteEl) { noteEl.remove(); noteEl = null; } }, 5000);
+}
+
+})();
+</script>
+</body>
+</html>

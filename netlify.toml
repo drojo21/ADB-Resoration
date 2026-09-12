@@ -1,0 +1,17 @@
+# Static site — everything is served straight out of the repo root.
+#   /       -> index.html      photo intake form
+#   /maps   -> maps/index.html pin map
+[build]
+  publish = "."
+
+# Netlify serves maps/index.html at /maps on its own; these just catch the
+# shapes people actually type.
+[[redirects]]
+  from = "/map"
+  to = "/maps"
+  status = 301
+
+[[redirects]]
+  from = "/maps.html"
+  to = "/maps"
+  status = 301
