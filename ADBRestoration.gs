@@ -10,6 +10,9 @@ var ROOT_NAME  = 'ADB Restoration';
 var SHEET_NAME = 'ADB Restoration Log';
 var CATEGORIES = ['Concrete Res.', 'Pothole Res.'];
 
+// The work is all in-state. Geocoder results outside this box are wrong.
+var AZ_BOUNDS = { latMin: 31.0, latMax: 37.1, lngMin: -115.0, lngMax: -108.9 };
+
 var HEADERS = [
   'Timestamp', 'PO', 'Category', 'Latitude', 'Longitude',
   'Address', 'Captured At', 'Location Source', 'Note',
@@ -110,12 +113,14 @@ function doPost(e) {
  * ?action=points  -> all plotted photos
  * ?action=pos     -> known PO numbers, for the upload form dropdown
  * ?action=kml     -> rebuild the KML file, returns its URL
+ * ?action=geocode -> street-level coordinates for a stamped address
  */
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) || 'points';
   try {
     if (action === 'pos')  return json_({ ok: true, pos: listPOs_() });
     if (action === 'kml')  return json_({ ok: true, url: buildKml() });
+    if (action === 'geocode') return json_(geocodeAddress_(e.parameter.address));
     return json_({ ok: true, points: listPoints_() });
   } catch (err) {
     return json_({ ok: false, error: String(err.message || err) });
@@ -155,6 +160,56 @@ function listPOs_() {
   return out.sort();
 }
 
+/* ------------------------------------------------------------------ geocode */
+
+/**
+ * Coordinates for an address read off a photo stamp that carried no lat/lng.
+ * Address-level is coarse, but it lands on the right block — closer than the
+ * phone's idea of "here" when the photo was taken months ago and miles away.
+ * Uses the built-in Maps service, so there is no API key to manage.
+ *
+ * Returns { ok: true, found: false } when the address is unusable, resolves
+ * outside Arizona, or only resolves to a city or ZIP centroid. A downtown pin
+ * is the wrong-side-of-town guess this exists to prevent, so those cases fall
+ * through and let the caller reach for phone GPS instead.
+ */
+function geocodeAddress_(address) {
+  var q = String(address || '').trim();
+  if (q.length < 6) return { ok: true, found: false };
+
+  // OCR'd stamps repeat across a job, and the geocoder is quota-limited.
+  var cache = CacheService.getScriptCache();
+  var key = 'geo_' + Utilities.base64EncodeWebSafe(
+    Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, q));
+  var cached = cache.get(key);
+  if (cached) return JSON.parse(cached);
+
+  var res = Maps.newGeocoder()
+    .setRegion('us')
+    .setBounds(AZ_BOUNDS.latMin, AZ_BOUNDS.lngMin, AZ_BOUNDS.latMax, AZ_BOUNDS.lngMax)
+    .geocode(q);
+
+  var out = { ok: true, found: false };
+  var r = res && res.status === 'OK' && res.results && res.results[0];
+  if (r && r.geometry.location_type !== 'APPROXIMATE' &&
+      inAZ_(r.geometry.location.lat, r.geometry.location.lng)) {
+    out = {
+      ok: true,
+      found: true,
+      lat: r.geometry.location.lat,
+      lng: r.geometry.location.lng,
+      address: r.formatted_address || q
+    };
+  }
+  cache.put(key, JSON.stringify(out), 21600);  // 6h — addresses do not move
+  return out;
+}
+
+function inAZ_(lat, lng) {
+  return lat >= AZ_BOUNDS.latMin && lat <= AZ_BOUNDS.latMax &&
+         lng >= AZ_BOUNDS.lngMin && lng <= AZ_BOUNDS.lngMax;
+}
+
 /* ------------------------------------------------------------------- KML */
 
 var KML_COLORS = {
@@ -187,6 +242,7 @@ function buildKml() {
       x.push('<description><![CDATA[' +
              '<b>' + p.po + '</b> — ' + p.category + '<br>' +
              (p.address || '') + '<br>' + (p.capturedAt || '') + '<br>' +
+             (p.source === 'geocode' ? '<i>Pin from the stamped address — block-level</i><br>' : '') +
              (p.note ? p.note + '<br>' : '') +
              '<img src="' + p.thumb + '" width="320"><br>' +
              '<a href="' + p.photo + '">Open photo</a>' +
