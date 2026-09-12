@@ -114,12 +114,19 @@ function doPost(e) {
 /* -------------------------------------------------------------- edits */
 
 /**
- * Run once to set the code the crew types before an edit will save:
- *   setEditPin('4821')
- * The web app is deployed to "Anyone", so without a code anybody holding the
- * /exec URL could rewrite the log. Re-run to change it; setEditPin('') turns
- * editing off again. Corrections are recorded in the sheet's own version
- * history (File > Version history), so there is always a way back.
+ * Sets the code the crew types before an edit will save. The web app is
+ * deployed to "Anyone", so without a code anybody holding the /exec URL could
+ * rewrite the log.
+ *
+ * Set it in Project Settings > Script properties instead of calling this:
+ * add EDIT_PIN with the code as its value. The editor's Run button cannot
+ * pass an argument — running setEditPin from it hands this pin === undefined
+ * and turns editing off — and this file is public, so a code typed into the
+ * script would be published with it. Script properties are neither.
+ *
+ * Clearing EDIT_PIN there, or setEditPin(''), turns editing off again.
+ * Corrections are recorded in the sheet's own version history
+ * (File > Version history), so there is always a way back.
  */
 function setEditPin(pin) {
   var props = PropertiesService.getScriptProperties();
