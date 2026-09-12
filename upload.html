@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16181d">
+<title>ADB Restoration — Add photos</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{
+    --ink:#16181d;
+    --ink-soft:#5a6270;
+    --paper:#ffffff;
+    --field:#f1f3f6;
+    --line:#d7dbe2;
+    --pothole:#d94336;
+    --concrete:#3682d9;
+    --go:#ffb020;
+    --bad:#c9372c;
+    --good:#1e7d4f;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--paper);color:var(--ink)}
+  body{
+    font:500 17px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    padding-bottom:calc(96px + env(safe-area-inset-bottom));
+  }
+  header{
+    position:sticky;top:0;z-index:500;
+    background:var(--ink);color:#fff;
+    padding:14px 16px calc(14px) 16px;
+    display:flex;align-items:baseline;gap:10px;
+  }
+  header h1{font-size:19px;font-weight:700;margin:0;letter-spacing:-.01em}
+  header span{font-size:14px;color:#9aa3b2;margin-left:auto}
+  main{padding:16px;max-width:640px;margin:0 auto}
+
+  label{display:block;font-size:14px;color:var(--ink-soft);margin:0 0 6px}
+  input[type=text],input[type=url],textarea{
+    width:100%;padding:15px 14px;font:inherit;font-size:18px;
+    background:var(--field);border:2px solid transparent;border-radius:10px;color:var(--ink);
+  }
+  input:focus,textarea:focus,button:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+  .field{margin-bottom:18px}
+
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .cat{
+    padding:18px 12px;border:2px solid var(--line);background:var(--paper);
+    border-radius:10px;font:inherit;font-size:17px;font-weight:600;color:var(--ink-soft);
+    display:flex;align-items:center;justify-content:center;gap:9px;min-height:60px;
+  }
+  .cat .dot{width:14px;height:14px;border-radius:50%;background:currentColor;opacity:.35}
+  .cat[aria-pressed=true]{border-color:currentColor;background:#fff}
+  .cat[aria-pressed=true] .dot{opacity:1}
+  .cat.pothole[aria-pressed=true]{color:var(--pothole)}
+  .cat.concrete[aria-pressed=true]{color:var(--concrete)}
+
+  .add{
+    width:100%;min-height:88px;margin:6px 0 4px;
+    border:2px dashed var(--line);border-radius:12px;background:var(--field);
+    font:inherit;font-size:18px;font-weight:600;color:var(--ink);
+  }
+  .add:disabled{opacity:.45}
+
+  .shot{
+    display:flex;gap:12px;padding:12px;margin-bottom:10px;
+    border:1px solid var(--line);border-radius:12px;align-items:flex-start;
+  }
+  .shot img{width:76px;height:76px;object-fit:cover;border-radius:8px;background:var(--field);flex:none}
+  .shot .meta{flex:1;min-width:0}
+  .shot .coords{font-variant-numeric:tabular-nums;font-size:15px;word-break:break-all}
+  .shot .where{font-size:14px;color:var(--ink-soft);margin-top:2px}
+  .tag{
+    display:inline-block;font-size:12px;font-weight:700;padding:3px 8px;
+    border-radius:5px;margin-top:6px;
+  }
+  .tag.stamp{background:#e4f2ea;color:var(--good)}
+  .tag.gps{background:#fdf0d9;color:#8a5a00}
+  .tag.manual{background:#e8eaee;color:var(--ink-soft)}
+  .tag.none{background:#fbe4e2;color:var(--bad)}
+  .tag.sent{background:var(--good);color:#fff}
+  .shot .row{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+  .mini{
+    padding:9px 12px;font:inherit;font-size:14px;font-weight:600;
+    border:1px solid var(--line);background:var(--paper);border-radius:8px;color:var(--ink);
+  }
+  .shot.done{opacity:.55}
+  .shot.failed{border-color:var(--bad)}
+
+  footer{
+    position:fixed;left:0;right:0;bottom:0;z-index:500;
+    background:var(--paper);border-top:1px solid var(--line);
+    padding:12px 16px calc(12px + env(safe-area-inset-bottom));
+  }
+  .send{
+    width:100%;min-height:60px;border:none;border-radius:12px;
+    background:var(--go);color:var(--ink);font:inherit;font-size:19px;font-weight:700;
+  }
+  .send:disabled{background:var(--field);color:var(--ink-soft)}
+  .status{text-align:center;font-size:14px;color:var(--ink-soft);margin:0 0 8px}
+
+  dialog{
+    border:none;border-radius:14px;padding:0;width:min(94vw,560px);
+    box-shadow:0 18px 50px rgba(0,0,0,.3);
+  }
+  dialog::backdrop{background:rgba(22,24,29,.6)}
+  #map{height:320px;border-radius:14px 14px 0 0}
+  .sheet-foot{padding:14px;display:flex;gap:10px}
+  .sheet-foot button{flex:1;min-height:52px;border-radius:10px;font:inherit;font-weight:700;font-size:16px;border:1px solid var(--line);background:var(--paper);color:var(--ink)}
+  .sheet-foot .primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .hint{font-size:14px;color:var(--ink-soft);padding:10px 14px 0}
+  .warn{background:#fdf0d9;border-left:4px solid var(--go);padding:12px 14px;border-radius:8px;font-size:15px;margin-bottom:16px}
+  .empty{color:var(--ink-soft);font-size:15px;padding:8px 2px 16px}
+  @media (prefers-reduced-motion:no-preference){
+    .shot{transition:opacity .2s}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ADB Restoration</h1>
+  <span id="jobLabel"></span>
+</header>
+
+<main>
+  <div id="setup" class="field" hidden>
+    <div class="warn">Paste the web app URL from Apps Script to finish setup. You only do this once on this phone.</div>
+    <label for="apiUrl">Apps Script web app URL</label>
+    <input type="url" id="apiUrl" placeholder="https://script.google.com/macros/s/…/exec" inputmode="url">
+    <button class="mini" id="saveApi" style="margin-top:10px">Save URL</button>
+  </div>
+
+  <div class="field">
+    <label for="po">PO number</label>
+    <input type="text" id="po" list="poList" placeholder="ADB0089505" inputmode="text"
+           autocapitalize="characters" autocomplete="off" spellcheck="false">
+    <datalist id="poList"></datalist>
+    <div id="poWarn" class="hint" style="padding-left:2px" hidden></div>
+  </div>
+
+  <div class="field">
+    <label>Work type</label>
+    <div class="pair">
+      <button type="button" class="cat pothole" data-cat="Pothole Res." aria-pressed="false">
+        <span class="dot"></span>Pothole
+      </button>
+      <button type="button" class="cat concrete" data-cat="Concrete Res." aria-pressed="false">
+        <span class="dot"></span>Concrete
+      </button>
+    </div>
+  </div>
+
+  <button type="button" class="add" id="addBtn" disabled>Take or choose photos</button>
+  <input type="file" id="picker" accept="image/*" multiple hidden>
+
+  <div id="shots"></div>
+  <p class="empty" id="empty">No photos yet. Pick a PO and work type first.</p>
+</main>
+
+<footer>
+  <p class="status" id="status">&nbsp;</p>
+  <button class="send" id="send" disabled>Upload</button>
+</footer>
+
+<dialog id="pinSheet">
+  <div id="map"></div>
+  <p class="hint" id="pinHint">Drag the pin to the exact spot.</p>
+  <div class="sheet-foot">
+    <button type="button" id="useGps">Use my location</button>
+    <button type="button" class="primary" id="pinDone">Set location</button>
+  </div>
+</dialog>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/tesseract.js@5.1.0/dist/tesseract.min.js"></script>
+<script>
+(function () {
+'use strict';
+
+/* ---------------------------------------------------------------- config */
+
+var AZ = { latMin: 31.0, latMax: 37.1, lngMin: -115.0, lngMax: -108.9 };
+var MAX_EDGE = 2048;      // longest side of the uploaded image
+var JPEG_Q   = 0.85;
+var OCR_W    = 1400;      // width the stamp crop is scaled to before OCR
+
+var api = localStorage.getItem('adb.api') || '';
+var shots = [];
+var ocrWorker = null;
+var pinTarget = null, map = null, marker = null;
+
+var $ = function (id) { return document.getElementById(id); };
+
+/* ------------------------------------------------------------------ boot */
+
+if (!api) $('setup').hidden = false;
+
+$('saveApi').addEventListener('click', function () {
+  var v = $('apiUrl').value.trim();
+  if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(v)) {
+    return say('That does not look like a web app URL. It should end in /exec.');
+  }
+  api = v;
+  localStorage.setItem('adb.api', api);
+  $('setup').hidden = true;
+  say('Saved.');
+  loadPOs();
+});
+
+$('po').value = localStorage.getItem('adb.po') || '';
+var savedCat = localStorage.getItem('adb.cat') || '';
+if (savedCat) setCategory(savedCat);
+refreshJobLabel();
+if (api) loadPOs();
+
+/* --------------------------------------------------------------- job bar */
+
+$('po').addEventListener('input', function () {
+  localStorage.setItem('adb.po', this.value);
+  var norm = normalizePO(this.value);
+  var w = $('poWarn');
+  if (norm && !/^[A-Z]{2,4}\d{4,10}$/.test(norm)) {
+    w.textContent = 'Saving as ' + norm + ' — check that against the work order.';
+    w.hidden = false;
+  } else if (norm && norm !== this.value.toUpperCase().replace(/[^A-Z0-9]/g, '')) {
+    w.textContent = 'Filing under ' + norm;
+    w.hidden = false;
+  } else {
+    w.hidden = true;
+  }
+  refreshJobLabel();
+});
+
+Array.prototype.forEach.call(document.querySelectorAll('.cat'), function (b) {
+  b.addEventListener('click', function () { setCategory(b.dataset.cat); });
+});
+
+function setCategory(cat) {
+  Array.prototype.forEach.call(document.querySelectorAll('.cat'), function (b) {
+    b.setAttribute('aria-pressed', String(b.dataset.cat === cat));
+  });
+  localStorage.setItem('adb.cat', cat);
+  refreshJobLabel();
+}
+
+function currentCategory() {
+  var el = document.querySelector('.cat[aria-pressed=true]');
+  return el ? el.dataset.cat : '';
+}
+
+function refreshJobLabel() {
+  var po = normalizePO($('po').value), cat = currentCategory();
+  $('jobLabel').textContent = po && cat ? po + ' · ' + cat.replace(' Res.', '') : '';
+  var ready = !!(po && cat && api);
+  $('addBtn').disabled = !ready;
+  $('empty').textContent = ready
+    ? 'No photos yet. Tap above to start.'
+    : 'Pick a PO and work type first.';
+  updateSend();
+}
+
+/** Mirrors normalizePO_ in the Apps Script — keep the two in step. */
+function normalizePO(raw) {
+  if (!raw) return '';
+  var s = String(raw).toUpperCase().replace(/[^A-Z0-9]+/g, '');
+  if (!s) return '';
+  if (/^\d+$/.test(s)) return 'ADB' + pad(s, 7);
+  var m = s.match(/^([A-Z]{2,4})(\d+)$/);
+  if (m && m[2].length < 7) return m[1] + pad(m[2], 7);
+  return s;
+}
+function pad(s, n) { s = String(s); while (s.length < n) s = '0' + s; return s; }
+
+function loadPOs() {
+  fetch(api + '?action=pos').then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.ok) return;
+    $('poList').innerHTML = d.pos.map(function (p) {
+      return '<option value="' + p + '"></option>';
+    }).join('');
+  }).catch(function () { /* offline is fine — the field still accepts typing */ });
+}
+
+/* -------------------------------------------------------------- intake */
+
+$('addBtn').addEventListener('click', function () { $('picker').click(); });
+
+$('picker').addEventListener('change', function (e) {
+  var files = Array.prototype.slice.call(e.target.files || []);
+  e.target.value = '';
+  files.forEach(addShot);
+});
+
+function addShot(file) {
+  var shot = {
+    id: 'p' + Date.now() + Math.random().toString(36).slice(2, 6),
+    file: file, lat: null, lng: null, address: '', capturedAt: '',
+    source: 'none', state: 'reading', note: ''
+  };
+  shots.push(shot);
+  $('empty').hidden = true;
+  render();
+  process(shot).catch(function (err) {
+    shot.state = 'ready';
+    shot.source = 'none';
+    console.warn(err);
+    render();
+  });
+}
+
+function process(shot) {
+  return loadBitmap(shot.file).then(function (bmp) {
+    shot.thumb = thumbUrl(bmp);
+    shot.upload = encode(bmp, MAX_EDGE);
+    render();
+    return readStamp(bmp).then(function (found) {
+      if (found.lat != null && inArizona(found.lat, found.lng)) {
+        shot.lat = found.lat; shot.lng = found.lng;
+        shot.source = 'stamp';
+      }
+      shot.address = found.address || '';
+      shot.capturedAt = found.capturedAt || '';
+      if (shot.lat == null) return fallbackGps(shot);
+    }).then(function () {
+      shot.state = 'ready';
+      if (bmp.close) bmp.close();
+      render();
+    });
+  });
+}
+
+/** Decode with EXIF orientation applied — the stamp is not where the raw pixels say. */
+function loadBitmap(file) {
+  if (window.createImageBitmap) {
+    return createImageBitmap(file, { imageOrientation: 'from-image' }).catch(viaImg);
+  }
+  return viaImg();
+
+  function viaImg() {
+    return new Promise(function (res, rej) {
+      var img = new Image();
+      img.onload = function () { res(img); };
+      img.onerror = rej;
+      img.src = URL.createObjectURL(file);
+    });
+  }
+}
+
+function draw(src, w, h) {
+  var c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  c.getContext('2d').drawImage(src, 0, 0, w, h);
+  return c;
+}
+
+function thumbUrl(bmp) {
+  var s = 160 / Math.min(bmp.width, bmp.height);
+  var c = document.createElement('canvas');
+  c.width = 160; c.height = 160;
+  var ctx = c.getContext('2d');
+  ctx.drawImage(bmp, (bmp.width * s - 160) / -2, (bmp.height * s - 160) / -2,
+                bmp.width * s, bmp.height * s);
+  return c.toDataURL('image/jpeg', 0.7);
+}
+
+function encode(bmp, maxEdge) {
+  var scale = Math.min(1, maxEdge / Math.max(bmp.width, bmp.height));
+  var c = draw(bmp, Math.round(bmp.width * scale), Math.round(bmp.height * scale));
+  return c.toDataURL('image/jpeg', JPEG_Q).split(',')[1];
+}
+
+/* ----------------------------------------------------------------- OCR */
+
+function readStamp(bmp) {
+  // The stamp sits in the bottom fifth. Crop, then push contrast until the
+  // white text separates from whatever the photo is of.
+  var top = Math.round(bmp.height * 0.78);
+  var cropH = bmp.height - top;
+  var scale = OCR_W / bmp.width;
+  var c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale);
+  c.height = Math.round(cropH * scale);
+  c.getContext('2d').drawImage(bmp, 0, top, bmp.width, cropH, 0, 0, c.width, c.height);
+
+  var ctx = c.getContext('2d');
+  var img = ctx.getImageData(0, 0, c.width, c.height);
+  var lum = new Uint8Array(img.data.length / 4), max = 0;
+  for (var i = 0, j = 0; i < img.data.length; i += 4, j++) {
+    var v = (img.data[i] * 299 + img.data[i + 1] * 587 + img.data[i + 2] * 114) / 1000 | 0;
+    lum[j] = v;
+    if (v > max) max = v;
+  }
+
+  var cuts = [max - 35, max - 60, 200, 170].filter(function (t, k, a) {
+    return t > 60 && t < 250 && a.indexOf(t) === k;
+  });
+
+  return worker().then(function (w) {
+    return cuts.reduce(function (chain, cut) {
+      return chain.then(function (hit) {
+        if (hit && hit.lat != null) return hit;
+        binarize(ctx, img, lum, cut);
+        return w.recognize(c).then(function (r) {
+          var parsed = parseStamp(r.data.text);
+          return (parsed.lat != null || !hit) ? parsed : hit;
+        });
+      });
+    }, Promise.resolve(null));
+  });
+}
+
+function binarize(ctx, img, lum, cut) {
+  var d = img.data;
+  for (var i = 0, j = 0; i < d.length; i += 4, j++) {
+    var on = lum[j] > cut ? 0 : 255;   // dark text on white reads best
+    d[i] = d[i + 1] = d[i + 2] = on;
+    d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function worker() {
+  if (ocrWorker) return ocrWorker;
+  ocrWorker = Tesseract.createWorker('eng');
+  return ocrWorker;
+}
+
+var COORD = /(\d{1,3}\.\d{3,10})\s*°?\s*([NS])[\s,]+(\d{1,3}\.\d{3,10})\s*°?\s*([EW])/i;
+var WHEN  = /([A-Z][a-z]{2}\s+\d{1,2},\s*\d{4}[, ]+\d{1,2}:\d{2}:\d{2}\s*[AP]M)/;
+
+function parseStamp(text) {
+  var out = { lat: null, lng: null, address: '', capturedAt: '' };
+  var clean = String(text || '').replace(/[º°]/g, ' ').replace(/[ \t]+/g, ' ');
+
+  var m = clean.match(COORD);
+  if (!m) {
+    // Common OCR swaps, applied only to glyphs that can't be a hemisphere letter.
+    m = clean.replace(/[Oo]/g, '0').replace(/[Il|]/g, '1').match(COORD);
+  }
+  if (m) {
+    var lat = parseFloat(m[1]), lng = parseFloat(m[3]);
+    out.lat = m[2].toUpperCase() === 'S' ? -lat : lat;
+    out.lng = m[4].toUpperCase() === 'W' ? -lng : lng;
+  }
+
+  var w = clean.match(WHEN);
+  if (w) out.capturedAt = w[1].replace(/\s+/g, ' ').trim();
+
+  // Address is whatever follows the coordinate line — or the date line, on the
+  // older photos whose stamp has no coordinates at all.
+  var lines = clean.split('\n').map(function (s) { return s.trim(); })
+                   .filter(function (s) { return s.length > 2; });
+  var start = -1;
+  for (var k = 0; k < lines.length; k++) {
+    var fixed = lines[k].replace(/[Oo]/g, '0').replace(/[Il|]/g, '1');
+    if (COORD.test(lines[k]) || COORD.test(fixed) || WHEN.test(lines[k])) start = k;
+  }
+  out.address = start < 0 ? '' :
+    lines.slice(start + 1, start + 5)
+         .filter(function (ln) { return /[A-Za-z]{3}/.test(ln); })
+         .join(', ');
+  return out;
+}
+
+function inArizona(lat, lng) {
+  return lat >= AZ.latMin && lat <= AZ.latMax && lng >= AZ.lngMin && lng <= AZ.lngMax;
+}
+
+/* ------------------------------------------------------- location fallback */
+
+function fallbackGps(shot) {
+  if (!navigator.geolocation) return Promise.resolve();
+  return new Promise(function (res) {
+    navigator.geolocation.getCurrentPosition(function (p) {
+      shot.lat = p.coords.latitude;
+      shot.lng = p.coords.longitude;
+      shot.source = 'gps';
+      res();
+    }, function () { res(); }, { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 });
+  });
+}
+
+/* ----------------------------------------------------------------- render */
+
+var LABEL = {
+  stamp:  ['stamp',  'From photo stamp'],
+  gps:    ['gps',    'Phone location — check the pin'],
+  manual: ['manual', 'Set by hand'],
+  none:   ['none',   'No location — tap Set location']
+};
+
+function render() {
+  var host = $('shots');
+  host.innerHTML = '';
+  shots.forEach(function (s) {
+    var el = document.createElement('div');
+    el.className = 'shot' + (s.state === 'sent' ? ' done' : '') +
+                            (s.state === 'failed' ? ' failed' : '');
+
+    var coords = s.lat != null
+      ? s.lat.toFixed(6) + ', ' + s.lng.toFixed(6)
+      : (s.state === 'reading' ? 'Reading the stamp…' : 'Location needed');
+
+    var tag = s.state === 'sent'
+      ? '<span class="tag sent">Uploaded</span>'
+      : '<span class="tag ' + LABEL[s.source][0] + '">' + LABEL[s.source][1] + '</span>';
+
+    el.innerHTML =
+      '<img src="' + (s.thumb || '') + '" alt="">' +
+      '<div class="meta">' +
+        '<div class="coords">' + coords + '</div>' +
+        (s.address ? '<div class="where">' + esc(s.address) + '</div>' : '') +
+        (s.capturedAt ? '<div class="where">' + esc(s.capturedAt) + '</div>' : '') +
+        tag +
+        (s.error ? '<div class="where" style="color:var(--bad)">' + esc(s.error) + '</div>' : '') +
+        '<div class="row"></div>' +
+      '</div>';
+
+    var row = el.querySelector('.row');
+    if (s.state !== 'sent') {
+      row.appendChild(btn(s.lat != null ? 'Adjust pin' : 'Set location', function () { openPin(s); }));
+      row.appendChild(btn('Remove', function () {
+        shots = shots.filter(function (x) { return x !== s; });
+        if (!shots.length) $('empty').hidden = false;
+        render();
+      }));
+    }
+    host.appendChild(el);
+  });
+  updateSend();
+}
+
+function btn(text, fn) {
+  var b = document.createElement('button');
+  b.type = 'button'; b.className = 'mini'; b.textContent = text;
+  b.addEventListener('click', fn);
+  return b;
+}
+
+function esc(s) {
+  return String(s).replace(/[<>&]/g, function (c) {
+    return { '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c];
+  });
+}
+
+function updateSend() {
+  var ready = shots.filter(function (s) {
+    return (s.state === 'ready' || s.state === 'failed') && s.lat != null && s.upload;
+  });
+  var stuck = shots.filter(function (s) { return s.state === 'ready' && s.lat == null; });
+  $('send').disabled = !ready.length || !api;
+  $('send').textContent = ready.length
+    ? 'Upload ' + ready.length + (ready.length === 1 ? ' photo' : ' photos')
+    : 'Upload';
+  if (stuck.length) say(stuck.length + ' photo' + (stuck.length > 1 ? 's need' : ' needs') + ' a location');
+}
+
+function say(msg) { $('status').textContent = msg || '\u00a0'; }
+
+/* -------------------------------------------------------------- pin sheet */
+
+function openPin(shot) {
+  pinTarget = shot;
+  var sheet = $('pinSheet');
+  sheet.showModal();
+  var start = shot.lat != null ? [shot.lat, shot.lng] : [32.2226, -110.9747];
+
+  if (!map) {
+    map = L.map('map', { zoomControl: false }).setView(start, 19);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 20, attribution: '© OpenStreetMap'
+    }).addTo(map);
+    marker = L.marker(start, { draggable: true }).addTo(map);
+  } else {
+    map.setView(start, 19);
+    marker.setLatLng(start);
+  }
+  setTimeout(function () { map.invalidateSize(); }, 60);
+  $('pinHint').textContent = shot.lat != null
+    ? 'Drag the pin if it is off the defect.'
+    : 'No location was read from this photo. Drag the pin to the spot.';
+}
+
+$('useGps').addEventListener('click', function () {
+  if (!navigator.geolocation) return;
+  $('useGps').textContent = 'Locating…';
+  navigator.geolocation.getCurrentPosition(function (p) {
+    marker.setLatLng([p.coords.latitude, p.coords.longitude]);
+    map.setView([p.coords.latitude, p.coords.longitude], 19);
+    $('useGps').textContent = 'Use my location';
+  }, function () {
+    $('useGps').textContent = 'Location unavailable';
+  }, { enableHighAccuracy: true, timeout: 10000 });
+});
+
+$('pinDone').addEventListener('click', function () {
+  var p = marker.getLatLng();
+  if (pinTarget) {
+    var moved = pinTarget.lat == null ||
+                Math.abs(p.lat - pinTarget.lat) > 1e-7 ||
+                Math.abs(p.lng - pinTarget.lng) > 1e-7;
+    pinTarget.lat = p.lat;
+    pinTarget.lng = p.lng;
+    if (moved) pinTarget.source = 'manual';
+  }
+  $('pinSheet').close();
+  render();
+});
+
+/* ---------------------------------------------------------------- upload */
+
+$('send').addEventListener('click', function () {
+  var queue = shots.filter(function (s) {
+    return (s.state === 'ready' || s.state === 'failed') && s.lat != null && s.upload;
+  });
+  if (!queue.length) return;
+
+  $('send').disabled = true;
+  var po = normalizePO($('po').value), cat = currentCategory(), done = 0, failed = 0;
+
+  queue.reduce(function (chain, s) {
+    return chain.then(function () {
+      say('Uploading ' + (done + failed + 1) + ' of ' + queue.length + '…');
+      return send(s, po, cat).then(function () {
+        s.state = 'sent'; s.error = ''; done++;
+      }).catch(function (err) {
+        s.state = 'failed'; s.error = String(err.message || err); failed++;
+      }).then(render);
+    });
+  }, Promise.resolve()).then(function () {
+    say(done + ' uploaded' + (failed ? ', ' + failed + ' failed — tap Upload to retry' : ''));
+    if (!failed) {
+      shots = shots.filter(function (s) { return s.state !== 'sent'; });
+      if (!shots.length) $('empty').hidden = false;
+      render();
+      loadPOs();
+    }
+    updateSend();
+  });
+});
+
+function send(shot, po, cat) {
+  var stamp = (shot.capturedAt || '').replace(/[^0-9A-Za-z]+/g, '') ||
+              new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+  var payload = {
+    po: po,
+    category: cat,
+    lat: shot.lat,
+    lng: shot.lng,
+    address: shot.address,
+    capturedAt: shot.capturedAt,
+    locationSource: shot.source,
+    note: shot.note,
+    filename: po + '_' + cat.replace(/\W+/g, '') + '_' + stamp + '.jpg',
+    imageBase64: shot.upload
+  };
+
+  // text/plain on purpose: application/json triggers a CORS preflight that
+  // Apps Script web apps cannot answer.
+  return fetch(api, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(payload)
+  }).then(function (r) {
+    if (!r.ok) throw new Error('Server returned ' + r.status);
+    return r.json();
+  }).then(function (d) {
+    if (!d.ok) throw new Error(d.error || 'Upload rejected');
+    return d;
+  });
+}
+
+window.addEventListener('beforeunload', function (e) {
+  if (shots.some(function (s) { return s.state !== 'sent'; })) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
+})();
+</script>
+</body>
+</html>
