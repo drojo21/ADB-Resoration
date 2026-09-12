@@ -72,6 +72,50 @@
     background:var(--ink);color:#fff;padding:11px 16px;border-radius:22px;font-size:14px;
     box-shadow:0 6px 20px rgba(0,0,0,.28);max-width:90vw;text-align:center;
   }
+  .pop button.edit{
+    display:block;width:100%;margin-top:6px;padding:10px;border-radius:9px;
+    border:1px solid var(--line);background:var(--paper);color:var(--ink-soft);
+    font:inherit;font-size:14px;font-weight:600;
+  }
+
+  dialog{
+    border:none;border-radius:14px;padding:0;width:min(94vw,560px);
+    max-height:92vh;overflow:auto;box-shadow:0 18px 50px rgba(0,0,0,.3);
+    color:var(--ink);
+  }
+  dialog::backdrop{background:rgba(22,24,29,.6)}
+  .ehead{padding:16px 16px 0;font-size:18px;font-weight:700}
+  .ebody{padding:14px 16px 4px}
+  .ebody label{display:block;font-size:14px;color:var(--ink-soft);margin:14px 0 6px}
+  .ebody label:first-child{margin-top:0}
+  .ebody input[type=text]{
+    width:100%;padding:14px;font:inherit;font-size:17px;background:var(--field);
+    border:2px solid transparent;border-radius:10px;color:var(--ink);
+  }
+  .ebody input:focus{outline:3px solid var(--ink);outline-offset:2px}
+  .pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .cat{
+    padding:16px 12px;border:2px solid var(--line);background:var(--paper);
+    border-radius:10px;font:inherit;font-size:16px;font-weight:600;
+    color:var(--ink-soft);display:flex;align-items:center;justify-content:center;
+    gap:9px;min-height:56px;
+  }
+  .cat .dot{width:14px;height:14px;border-radius:50%;background:currentColor;opacity:.35}
+  .cat[aria-pressed=true]{border-color:currentColor}
+  .cat[aria-pressed=true] .dot{opacity:1}
+  .cat.pothole[aria-pressed=true]{color:var(--pothole)}
+  .cat.concrete[aria-pressed=true]{color:var(--concrete)}
+  #eMap{height:230px;border-radius:10px;background:var(--field)}
+  .ehint{font-size:14px;color:var(--ink-soft);margin:8px 0 0}
+  .ehint.bad{color:var(--bad);font-weight:600}
+  .sheet-foot{padding:14px 16px calc(14px + env(safe-area-inset-bottom));display:flex;gap:10px}
+  .sheet-foot button{
+    flex:1;min-height:52px;border-radius:10px;font:inherit;font-weight:700;
+    font-size:16px;border:1px solid var(--line);background:var(--paper);color:var(--ink);
+  }
+  .sheet-foot .primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .sheet-foot button[disabled]{opacity:.5}
+
   .setup{padding:24px 18px;max-width:520px;margin:0 auto}
   .setup input{width:100%;padding:14px;font:inherit;font-size:17px;background:var(--field);
     border:2px solid transparent;border-radius:10px;margin:10px 0}
@@ -99,6 +143,44 @@
 </div>
 
 <div id="map"></div>
+
+<dialog id="editSheet">
+  <div class="ehead">Fix this photo&rsquo;s tags</div>
+  <div class="ebody">
+    <label for="ePo">PO number</label>
+    <input type="text" id="ePo" list="ePoList" inputmode="text"
+           autocapitalize="characters" autocomplete="off" spellcheck="false">
+    <datalist id="ePoList"></datalist>
+
+    <label>Work type</label>
+    <div class="pair">
+      <button type="button" class="cat pothole" data-cat="Pothole Res." aria-pressed="false">
+        <span class="dot"></span>Pothole
+      </button>
+      <button type="button" class="cat concrete" data-cat="Concrete Res." aria-pressed="false">
+        <span class="dot"></span>Concrete
+      </button>
+    </div>
+
+    <label for="eNote">Note</label>
+    <input type="text" id="eNote" placeholder="Optional">
+
+    <label>Pin location &mdash; drag it to the right spot</label>
+    <div id="eMap"></div>
+
+    <div id="ePinWrap" hidden>
+      <label for="ePin">Edit code</label>
+      <input type="text" id="ePin" inputmode="numeric" autocomplete="off"
+             placeholder="Asked once on this phone">
+    </div>
+
+    <p class="ehint" id="eHint"></p>
+  </div>
+  <div class="sheet-foot">
+    <button type="button" id="eCancel">Cancel</button>
+    <button type="button" class="primary" id="eSave">Save changes</button>
+  </div>
+</dialog>
 
 <div class="setup" id="setup" hidden>
   <p>Paste the Apps Script web app URL to load your pins. The upload form on this
@@ -270,7 +352,151 @@ function popup(p) {
     '<span class="src ' + src + '">' + esc(LABELS[src] || p.source) + '</span>' +
     '<a class="nav" href="' + nav + '" target="_blank" rel="noopener">Directions</a>' +
     (p.photo ? '<a class="photo" href="' + esc(p.photo) + '" target="_blank" rel="noopener">Open photo</a>' : '') +
+    // No file id means the script behind the feed predates editing.
+    (p.fileId ? '<button type="button" class="edit" data-file="' + esc(p.fileId) +
+                '">Fix tags</button>' : '') +
   '</div>';
+}
+
+/* ------------------------------------------------------------------ edit */
+
+/* A wrong PO or work type files the photo under the wrong job, and the photo
+   itself is fine — so this corrects the tags and the pin, never the image. */
+
+var eMap = null, eMarker = null, editing = null;
+
+document.addEventListener('click', function (ev) {
+  var b = ev.target.closest && ev.target.closest('.pop button.edit');
+  if (b) openEdit(b.getAttribute('data-file'));
+});
+
+function openEdit(fileId) {
+  var found = null;
+  points.forEach(function (p) { if (String(p.fileId) === fileId) found = p; });
+  if (!found) return;
+
+  editing = found;
+  $('ePo').value = found.po || '';
+  $('eNote').value = found.note || '';
+  setCat(found.category);
+  fillEditPOs();
+  $('ePinWrap').hidden = !!localStorage.getItem('adb.pin');
+  hint(found.source === 'stamp'
+    ? 'This pin came off the photo stamp — only move it if you know better.'
+    : '');
+
+  $('editSheet').showModal();
+
+  // Leaflet can only size itself once the dialog is actually on screen.
+  if (!eMap) {
+    eMap = L.map('eMap', { zoomControl: false, attributionControl: false });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 20
+    }).addTo(eMap);
+    eMarker = L.marker([0, 0], { draggable: true }).addTo(eMap);
+  }
+  eMap.invalidateSize();
+  eMap.setView([found.lat, found.lng], 18);
+  eMarker.setLatLng([found.lat, found.lng]);
+}
+
+$('eCancel').addEventListener('click', function () {
+  $('editSheet').close();
+});
+
+$('editSheet').addEventListener('close', function () { editing = null; });
+
+$('eSave').addEventListener('click', function () {
+  if (!editing) return;
+
+  var pin = localStorage.getItem('adb.pin') || $('ePin').value.trim();
+  if (!pin) return hint('Type the edit code to save.', true);
+
+  var po  = $('ePo').value.trim();
+  var cat = currentCat();
+  if (!po)  return hint('A photo needs a PO number.', true);
+  if (!cat) return hint('Pick pothole or concrete.', true);
+
+  var at = eMarker.getLatLng();
+  var row = editing;
+
+  $('eSave').disabled = true;
+  hint('Saving…');
+
+  fetch(api, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({
+      action: 'edit', pin: pin, fileId: row.fileId,
+      po: po, category: cat, note: $('eNote').value.trim(),
+      lat: at.lat, lng: at.lng
+    })
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d.ok) throw new Error(d.error || 'Save failed');
+
+      localStorage.setItem('adb.pin', pin);
+
+      // Patch the pin from what the sheet actually stored, so the map shows
+      // the saved row rather than what was typed.
+      row.po       = d.po;
+      row.category = d.category;
+      row.lat      = d.lat;
+      row.lng      = d.lng;
+      row.address  = d.address;
+      row.source   = d.source;
+      row.note     = d.note;
+
+      fillPOs();
+      draw(false);
+      $('editSheet').close();
+      note(d.poLooksNormal === false
+        ? 'Saved — that PO looks unusual, worth a check.'
+        : 'Saved.');
+    })
+    .catch(function (err) {
+      // A rejected code is worth asking again for; everything else is not.
+      if (/wrong code/i.test(err.message)) {
+        localStorage.removeItem('adb.pin');
+        $('ePinWrap').hidden = false;
+        $('ePin').value = '';
+      }
+      hint(err.message, true);
+    })
+    .then(function () { $('eSave').disabled = false; });
+});
+
+Array.prototype.forEach.call(document.querySelectorAll('#editSheet .cat'), function (b) {
+  b.addEventListener('click', function () { setCat(b.dataset.cat); });
+});
+
+function setCat(cat) {
+  Array.prototype.forEach.call(document.querySelectorAll('#editSheet .cat'), function (b) {
+    b.setAttribute('aria-pressed', b.dataset.cat === cat ? 'true' : 'false');
+  });
+}
+
+function currentCat() {
+  var got = '';
+  Array.prototype.forEach.call(document.querySelectorAll('#editSheet .cat'), function (b) {
+    if (b.getAttribute('aria-pressed') === 'true') got = b.dataset.cat;
+  });
+  return got;
+}
+
+function fillEditPOs() {
+  var pos = [];
+  points.forEach(function (p) { if (pos.indexOf(p.po) < 0) pos.push(p.po); });
+  $('ePoList').innerHTML = pos.sort().map(function (p) {
+    return '<option value="' + esc(p) + '"></option>';
+  }).join('');
+}
+
+function hint(msg, bad) {
+  var el = $('eHint');
+  el.textContent = msg || '';
+  el.className = 'ehint' + (bad ? ' bad' : '');
 }
 
 function esc(s) {
