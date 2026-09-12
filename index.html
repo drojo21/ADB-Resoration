@@ -76,6 +76,7 @@
   }
   .tag.stamp{background:#e4f2ea;color:var(--good)}
   .tag.gps{background:#fdf0d9;color:#8a5a00}
+  .tag.geocode{background:#e6edfa;color:#2a4d8f}
   .tag.manual{background:#e8eaee;color:var(--ink-soft)}
   .tag.none{background:#fbe4e2;color:var(--bad)}
   .tag.sent{background:var(--good);color:#fff}
@@ -184,6 +185,7 @@ var AZ = { latMin: 31.0, latMax: 37.1, lngMin: -115.0, lngMax: -108.9 };
 var MAX_EDGE = 2048;      // longest side of the uploaded image
 var JPEG_Q   = 0.85;
 var OCR_W    = 1400;      // width the stamp crop is scaled to before OCR
+var GEO_MS   = 8000;      // give up on the address lookup and try GPS
 
 var api = localStorage.getItem('adb.api') || '';
 var shots = [];
@@ -320,6 +322,10 @@ function process(shot) {
       }
       shot.address = found.address || '';
       shot.capturedAt = found.capturedAt || '';
+      // An address on the stamp beats the phone: it is where the photo was
+      // taken. Phone GPS is only where the phone is right now.
+      if (shot.lat == null && shot.address) return fallbackGeocode(shot);
+    }).then(function () {
       if (shot.lat == null) return fallbackGps(shot);
     }).then(function () {
       shot.state = 'ready';
@@ -468,6 +474,32 @@ function inArizona(lat, lng) {
 
 /* ------------------------------------------------------- location fallback */
 
+/** Ask the Apps Script geocoder to place the address the stamp gave us. */
+function fallbackGeocode(shot) {
+  if (!api) return Promise.resolve();
+
+  var lookup = fetch(api + '?action=geocode&address=' + encodeURIComponent(shot.address))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (!d || !d.ok || !d.found || !inArizona(d.lat, d.lng)) return;
+      // A slow answer may land after the timeout below already moved us on to
+      // GPS, or after the crew set the pin by hand. Those win.
+      if (shot.lat != null) return;
+      shot.lat = d.lat;
+      shot.lng = d.lng;
+      shot.address = d.address || shot.address;
+      shot.source = 'geocode';
+      render();
+    })
+    .catch(function () { /* offline, or the geocoder is out of quota */ });
+
+  return Promise.race([lookup, delay(GEO_MS)]);
+}
+
+function delay(ms) {
+  return new Promise(function (res) { setTimeout(res, ms); });
+}
+
 function fallbackGps(shot) {
   if (!navigator.geolocation) return Promise.resolve();
   return new Promise(function (res) {
@@ -484,6 +516,7 @@ function fallbackGps(shot) {
 
 var LABEL = {
   stamp:  ['stamp',  'From photo stamp'],
+  geocode:['geocode','From stamp address — block-level, check the pin'],
   gps:    ['gps',    'Phone location — check the pin'],
   manual: ['manual', 'Set by hand'],
   none:   ['none',   'No location — tap Set location']
@@ -503,7 +536,9 @@ function render() {
 
     var tag = s.state === 'sent'
       ? '<span class="tag sent">Uploaded</span>'
-      : '<span class="tag ' + LABEL[s.source][0] + '">' + LABEL[s.source][1] + '</span>';
+      : (function (l) {
+          return '<span class="tag ' + l[0] + '">' + l[1] + '</span>';
+        })(LABEL[s.source] || LABEL.none);
 
     el.innerHTML =
       '<img src="' + (s.thumb || '') + '" alt="">' +
