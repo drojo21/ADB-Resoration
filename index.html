@@ -81,7 +81,7 @@
   }
   .tag.stamp{background:#e4f2ea;color:var(--good)}
   .tag.gps{background:#fdf0d9;color:#8a5a00}
-  .tag.geocode{background:#e6edfa;color:#2a4d8f}
+  .tag.geocode,.tag.filename{background:#e6edfa;color:#2a4d8f}
   .tag.manual{background:#e8eaee;color:var(--ink-soft)}
   .tag.none{background:#fbe4e2;color:var(--bad)}
   .tag.sent{background:var(--good);color:#fff}
@@ -191,7 +191,7 @@ var AZ = { latMin: 31.0, latMax: 37.1, lngMin: -115.0, lngMax: -108.9 };
 var MAX_EDGE = 2048;      // longest side of the uploaded image
 var JPEG_Q   = 0.85;
 var OCR_W    = 1400;      // width the stamp crop is scaled to before OCR
-var GEO_MS   = 8000;      // give up on the address lookup and try GPS
+var GEO_MS   = 8000;      // start GPS as a hedge; a later address still wins
 
 var api = localStorage.getItem('adb.api') || '';
 var shots = [];
@@ -303,7 +303,7 @@ function addShot(file) {
   var shot = {
     id: 'p' + Date.now() + Math.random().toString(36).slice(2, 6),
     file: file, lat: null, lng: null, address: '', capturedAt: '',
-    source: 'none', state: 'reading', note: ''
+    source: 'none', state: 'reading', note: '', geoWarn: '', sending: false
   };
   shots.push(shot);
   $('empty').hidden = true;
@@ -328,8 +328,16 @@ function process(shot) {
       }
       shot.address = found.address || '';
       shot.capturedAt = found.capturedAt || '';
-      // An address on the stamp beats the phone: it is where the photo was
-      // taken. Phone GPS is only where the phone is right now.
+      // An address beats the phone: it is where the photo was taken, while
+      // phone GPS is only where the phone is right now. The stamp is the first
+      // place to look for one, the file name the second.
+      if (shot.lat == null && !shot.address) {
+        var named = addressFromName(shot.file.name);
+        if (named) {
+          shot.address = named;
+          return fallbackGeocode(shot, 'filename');
+        }
+      }
       if (shot.lat == null && shot.address) return fallbackGeocode(shot);
     }).then(function () {
       if (shot.lat == null) return fallbackGps(shot);
@@ -474,30 +482,74 @@ function parseStamp(text) {
   return out;
 }
 
+/**
+ * An address the crew put in the file name, for photos whose stamp carried
+ * neither coordinates nor an address — renaming a file back at the truck is
+ * common, and where the photo was taken beats where the phone is standing now.
+ *
+ * Deliberately strict: a wrong pin is worse than no pin, so this only answers
+ * when the name really looks like a street address. Camera and messaging apps
+ * name files after themselves, and their digits would geocode to nonsense.
+ */
+var CAMERA_NAME = /^(img|dsc|dscn|pxl|photo|image|screenshot|signal|whatsapp|fb_img|received|video|gopro|iphone)\b/i;
+var STREET_WORD = /\b(n|s|e|w|ne|nw|se|sw|st|ave|av|blvd|rd|dr|ln|ct|cir|pl|way|hwy|loop|pkwy|tr|road|street|avenue|boulevard|drive|lane|court|circle|place|highway|parkway|trail)\b/i;
+
+function addressFromName(name) {
+  var s = String(name || '').replace(/\.[a-z0-9]{2,4}$/i, '');
+  if (CAMERA_NAME.test(s)) return '';
+
+  s = s.replace(/_+/g, ' ');
+  // A PO in the name is already carried by the form.
+  s = s.replace(/^[A-Za-z]{2,4}\s?\d{4,10}\b[\s\-:]*/, '');
+  // Work type, duplicate marks, and the words phones and editors tack on.
+  s = s.replace(/\b(pothole|concrete|res|restoration|asphalt|sidewalk|curb|before|after|copy|final|edited|resized)\b/ig, ' ');
+  s = s.replace(/\(\d+\)\s*$/, '').replace(/[\s\-]+\d{1,2}\s*$/, '');
+  s = s.replace(/\s+/g, ' ').trim();
+
+  // A street number and what follows it — the rest of the name is not an address.
+  var m = s.match(/\b(\d{1,6})\s+([A-Za-z0-9.'#\- ,]{3,60})/);
+  if (!m) return '';
+
+  var out = (m[1] + ' ' + m[2]).replace(/\s+/g, ' ').replace(/[\s,]+$/, '').trim();
+  return STREET_WORD.test(out) && /[A-Za-z]{3}/.test(out) ? out : '';
+}
+
 function inArizona(lat, lng) {
   return lat >= AZ.latMin && lat <= AZ.latMax && lng >= AZ.lngMin && lng <= AZ.lngMax;
 }
 
 /* ------------------------------------------------------- location fallback */
 
-/** Ask the Apps Script geocoder to place the address the stamp gave us. */
-function fallbackGeocode(shot) {
+/** Ask the Apps Script geocoder to place the address we found. */
+function fallbackGeocode(shot, source) {
   if (!api) return Promise.resolve();
 
   var lookup = fetch(api + '?action=geocode&address=' + encodeURIComponent(shot.address))
     .then(function (r) { return r.json(); })
     .then(function (d) {
-      if (!d || !d.ok || !d.found || !inArizona(d.lat, d.lng)) return;
-      // A slow answer may land after the timeout below already moved us on to
-      // GPS, or after the crew set the pin by hand. Those win.
-      if (shot.lat != null) return;
+      if (!d || !d.ok || !d.found || !inArizona(d.lat, d.lng)) {
+        // Silence here reads as "the address was ignored", so say what happened.
+        shot.geoWarn = 'Could not place that address';
+        render();
+        return;
+      }
+      // The timeout below may already have moved on to GPS while this was in
+      // flight. GPS does not get to keep the pin just for being faster: the
+      // address is where the photo was taken, the phone only where it is
+      // standing now. A pin set by hand, or one already uploaded, outranks both.
+      if (shot.source === 'manual' || shot.state === 'sent' || shot.sending) return;
       shot.lat = d.lat;
       shot.lng = d.lng;
       shot.address = d.address || shot.address;
-      shot.source = 'geocode';
+      shot.source = source || 'geocode';
+      shot.geoWarn = '';
       render();
     })
-    .catch(function () { /* offline, or the geocoder is out of quota */ });
+    .catch(function () {
+      // Offline, or the geocoder is out of quota. GPS still runs below.
+      shot.geoWarn = 'Address lookup failed — check the pin';
+      render();
+    });
 
   return Promise.race([lookup, delay(GEO_MS)]);
 }
@@ -523,6 +575,7 @@ function fallbackGps(shot) {
 var LABEL = {
   stamp:  ['stamp',  'From photo stamp'],
   geocode:['geocode','From stamp address — block-level, check the pin'],
+  filename:['filename','From file name — block-level, check the pin'],
   gps:    ['gps',    'Phone location — check the pin'],
   manual: ['manual', 'Set by hand'],
   none:   ['none',   'No location — tap Set location']
@@ -552,6 +605,7 @@ function render() {
         '<div class="coords">' + coords + '</div>' +
         (s.address ? '<div class="where">' + esc(s.address) + '</div>' : '') +
         (s.capturedAt ? '<div class="where">' + esc(s.capturedAt) + '</div>' : '') +
+        (s.geoWarn ? '<div class="where" style="color:#8a5a00">' + esc(s.geoWarn) + '</div>' : '') +
         tag +
         (s.error ? '<div class="where" style="color:var(--bad)">' + esc(s.error) + '</div>' : '') +
         '<div class="row"></div>' +
@@ -662,11 +716,12 @@ $('send').addEventListener('click', function () {
   queue.reduce(function (chain, s) {
     return chain.then(function () {
       say('Uploading ' + (done + failed + 1) + ' of ' + queue.length + '…');
+      s.sending = true;
       return send(s, po, cat).then(function () {
         s.state = 'sent'; s.error = ''; done++;
       }).catch(function (err) {
         s.state = 'failed'; s.error = String(err.message || err); failed++;
-      }).then(render);
+      }).then(function () { s.sending = false; render(); });
     });
   }, Promise.resolve()).then(function () {
     say(done + ' uploaded' + (failed ? ', ' + failed + ' failed — tap Upload to retry' : ''));

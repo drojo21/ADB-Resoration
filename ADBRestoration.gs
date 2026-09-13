@@ -376,6 +376,12 @@ function inAZ_(lat, lng) {
 
 /* ------------------------------------------------------------------- KML */
 
+// Pins placed from an address land on the block, not the spot. Say so.
+var BLOCK_LEVEL = {
+  geocode:  'Pin from the stamped address — block-level',
+  filename: 'Pin from the file name — block-level'
+};
+
 var KML_COLORS = {
   'Pothole Res.':  'ff3643d9',  // aabbggrr — red
   'Concrete Res.': 'ffd98236'   // blue
@@ -406,7 +412,7 @@ function buildKml() {
       x.push('<description><![CDATA[' +
              '<b>' + p.po + '</b> — ' + p.category + '<br>' +
              (p.address || '') + '<br>' + (p.capturedAt || '') + '<br>' +
-             (p.source === 'geocode' ? '<i>Pin from the stamped address — block-level</i><br>' : '') +
+             (BLOCK_LEVEL[p.source] ? '<i>' + BLOCK_LEVEL[p.source] + '</i><br>' : '') +
              (p.note ? p.note + '<br>' : '') +
              '<img src="' + p.thumb + '" width="320"><br>' +
              '<a href="' + p.photo + '">Open photo</a>' +
