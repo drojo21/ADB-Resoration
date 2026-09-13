@@ -191,7 +191,7 @@ var AZ = { latMin: 31.0, latMax: 37.1, lngMin: -115.0, lngMax: -108.9 };
 var MAX_EDGE = 2048;      // longest side of the uploaded image
 var JPEG_Q   = 0.85;
 var OCR_W    = 1400;      // width the stamp crop is scaled to before OCR
-var GEO_MS   = 8000;      // give up on the address lookup and try GPS
+var GEO_MS   = 8000;      // start GPS as a hedge; a later address still wins
 
 var api = localStorage.getItem('adb.api') || '';
 var shots = [];
@@ -303,7 +303,7 @@ function addShot(file) {
   var shot = {
     id: 'p' + Date.now() + Math.random().toString(36).slice(2, 6),
     file: file, lat: null, lng: null, address: '', capturedAt: '',
-    source: 'none', state: 'reading', note: ''
+    source: 'none', state: 'reading', note: '', geoWarn: '', sending: false
   };
   shots.push(shot);
   $('empty').hidden = true;
@@ -527,17 +527,29 @@ function fallbackGeocode(shot, source) {
   var lookup = fetch(api + '?action=geocode&address=' + encodeURIComponent(shot.address))
     .then(function (r) { return r.json(); })
     .then(function (d) {
-      if (!d || !d.ok || !d.found || !inArizona(d.lat, d.lng)) return;
-      // A slow answer may land after the timeout below already moved us on to
-      // GPS, or after the crew set the pin by hand. Those win.
-      if (shot.lat != null) return;
+      if (!d || !d.ok || !d.found || !inArizona(d.lat, d.lng)) {
+        // Silence here reads as "the address was ignored", so say what happened.
+        shot.geoWarn = 'Could not place that address';
+        render();
+        return;
+      }
+      // The timeout below may already have moved on to GPS while this was in
+      // flight. GPS does not get to keep the pin just for being faster: the
+      // address is where the photo was taken, the phone only where it is
+      // standing now. A pin set by hand, or one already uploaded, outranks both.
+      if (shot.source === 'manual' || shot.state === 'sent' || shot.sending) return;
       shot.lat = d.lat;
       shot.lng = d.lng;
       shot.address = d.address || shot.address;
       shot.source = source || 'geocode';
+      shot.geoWarn = '';
       render();
     })
-    .catch(function () { /* offline, or the geocoder is out of quota */ });
+    .catch(function () {
+      // Offline, or the geocoder is out of quota. GPS still runs below.
+      shot.geoWarn = 'Address lookup failed — check the pin';
+      render();
+    });
 
   return Promise.race([lookup, delay(GEO_MS)]);
 }
@@ -593,6 +605,7 @@ function render() {
         '<div class="coords">' + coords + '</div>' +
         (s.address ? '<div class="where">' + esc(s.address) + '</div>' : '') +
         (s.capturedAt ? '<div class="where">' + esc(s.capturedAt) + '</div>' : '') +
+        (s.geoWarn ? '<div class="where" style="color:#8a5a00">' + esc(s.geoWarn) + '</div>' : '') +
         tag +
         (s.error ? '<div class="where" style="color:var(--bad)">' + esc(s.error) + '</div>' : '') +
         '<div class="row"></div>' +
@@ -703,11 +716,12 @@ $('send').addEventListener('click', function () {
   queue.reduce(function (chain, s) {
     return chain.then(function () {
       say('Uploading ' + (done + failed + 1) + ' of ' + queue.length + '…');
+      s.sending = true;
       return send(s, po, cat).then(function () {
         s.state = 'sent'; s.error = ''; done++;
       }).catch(function (err) {
         s.state = 'failed'; s.error = String(err.message || err); failed++;
-      }).then(render);
+      }).then(function () { s.sending = false; render(); });
     });
   }, Promise.resolve()).then(function () {
     say(done + ' uploaded' + (failed ? ', ' + failed + ' failed — tap Upload to retry' : ''));
