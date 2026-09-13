@@ -339,7 +339,7 @@ function listPOs_() {
  */
 function geocodeAddress_(address) {
   var q = String(address || '').trim();
-  if (q.length < 6) return { ok: true, found: false };
+  if (q.length < 6) return { ok: true, found: false, reason: 'too-short', tried: [q] };
 
   // OCR'd stamps repeat across a job, and the geocoder is quota-limited.
   var cache = CacheService.getScriptCache();
@@ -348,25 +348,63 @@ function geocodeAddress_(address) {
   var cached = cache.get(key);
   if (cached) return JSON.parse(cached);
 
+  var tried = [q];
+  var out = geocodeOnce_(q);
+
+  // A stamp usually gives the street and stops there. "100 N Stone Ave" on its
+  // own exists in half the country; with the city it is one place. Only worth
+  // adding when the address does not already name a state or ZIP.
+  if (!out.found && !/\b(AZ|ARIZONA)\b/i.test(q) && !/\b\d{5}\b/.test(q)) {
+    var withCity = q + ', ' + defaultPlace_();
+    tried.push(withCity);
+    var second = geocodeOnce_(withCity);
+    if (second.found) out = second;
+  }
+
+  out.tried = tried;
+  cache.put(key, JSON.stringify(out), 21600);  // 6h — addresses do not move
+  return out;
+}
+
+/**
+ * Where the work is, for addresses that name no city. Set DEFAULT_PLACE in
+ * Project Settings > Script properties to work another town.
+ */
+function defaultPlace_() {
+  return PropertiesService.getScriptProperties().getProperty('DEFAULT_PLACE') ||
+         'Tucson, AZ';
+}
+
+/**
+ * One geocoder pass. Says why it failed rather than just failing: a city-level
+ * hit and a garbled street are different problems, and the crew standing at
+ * the defect is the one who has to act on the difference.
+ */
+function geocodeOnce_(q) {
   var res = Maps.newGeocoder()
     .setRegion('us')
     .setBounds(AZ_BOUNDS.latMin, AZ_BOUNDS.lngMin, AZ_BOUNDS.latMax, AZ_BOUNDS.lngMax)
     .geocode(q);
 
-  var out = { ok: true, found: false };
   var r = res && res.status === 'OK' && res.results && res.results[0];
-  if (r && r.geometry.location_type !== 'APPROXIMATE' &&
-      inAZ_(r.geometry.location.lat, r.geometry.location.lng)) {
-    out = {
-      ok: true,
-      found: true,
-      lat: r.geometry.location.lat,
-      lng: r.geometry.location.lng,
-      address: r.formatted_address || q
-    };
+  if (!r) return { ok: true, found: false, reason: 'no-match' };
+
+  // APPROXIMATE means it landed on the town, not the street. A downtown pin is
+  // the wrong-side-of-town guess this whole path exists to prevent.
+  if (r.geometry.location_type === 'APPROXIMATE') {
+    return { ok: true, found: false, reason: 'city-level' };
   }
-  cache.put(key, JSON.stringify(out), 21600);  // 6h — addresses do not move
-  return out;
+  if (!inAZ_(r.geometry.location.lat, r.geometry.location.lng)) {
+    return { ok: true, found: false, reason: 'outside-az' };
+  }
+  return {
+    ok: true,
+    found: true,
+    lat: r.geometry.location.lat,
+    lng: r.geometry.location.lng,
+    address: r.formatted_address || q,
+    precision: r.geometry.location_type
+  };
 }
 
 function inAZ_(lat, lng) {
