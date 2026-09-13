@@ -62,6 +62,10 @@ function doPost(e) {
   try {
     var body = JSON.parse(e.postData.contents);
 
+    // Corrections come back through the same endpoint, but they carry no
+    // image and must not be held to the upload path's rules.
+    if (body.action === 'edit') return editRow_(body);
+
     var po       = normalizePO_(body.po);
     var category = matchCategory_(body.category);
     var lat      = Number(body.lat);
@@ -107,6 +111,166 @@ function doPost(e) {
   }
 }
 
+/* -------------------------------------------------------------- edits */
+
+/**
+ * Sets the code the crew types before an edit will save. The web app is
+ * deployed to "Anyone", so without a code anybody holding the /exec URL could
+ * rewrite the log.
+ *
+ * Set it in Project Settings > Script properties instead of calling this:
+ * add EDIT_PIN with the code as its value. The editor's Run button cannot
+ * pass an argument — running setEditPin from it hands this pin === undefined
+ * and turns editing off — and this file is public, so a code typed into the
+ * script would be published with it. Script properties are neither.
+ *
+ * Clearing EDIT_PIN there, or setEditPin(''), turns editing off again.
+ * Corrections are recorded in the sheet's own version history
+ * (File > Version history), so there is always a way back.
+ */
+function setEditPin(pin) {
+  var props = PropertiesService.getScriptProperties();
+  var v = String(pin == null ? '' : pin).trim();
+  if (!v) {
+    props.deleteProperty('EDIT_PIN');
+    Logger.log('Editing is off — no code set.');
+    return;
+  }
+  if (v.length < 4) throw new Error('Use at least 4 characters.');
+  props.setProperty('EDIT_PIN', v);
+  Logger.log('Edit code set. Type it into the map once per phone.');
+}
+
+// Ten wrong guesses in fifteen minutes and this stops answering. The URL is
+// public, so a short code would otherwise be a few minutes of guessing.
+var PIN_TRIES  = 10;
+var PIN_WINDOW = 900;
+
+function requirePin_(given) {
+  var want = PropertiesService.getScriptProperties().getProperty('EDIT_PIN');
+  if (!want) throw new Error('Editing is off — run setEditPin() in Apps Script first');
+
+  var cache = CacheService.getScriptCache();
+  var fails = Number(cache.get('pin_fails') || 0);
+  if (fails >= PIN_TRIES) throw new Error('Too many wrong codes — wait a few minutes');
+
+  if (String(given == null ? '' : given) !== want) {
+    cache.put('pin_fails', String(fails + 1), PIN_WINDOW);
+    throw new Error('Wrong code');
+  }
+  cache.remove('pin_fails');
+}
+
+/**
+ * Corrects the tags on one already-uploaded photo: PO, category, note, and
+ * the pin itself. Keyed by Drive file ID, which is the one column nothing
+ * else rewrites. Only the fields present in the request are touched.
+ *
+ * The photo never changes — a wrong tag is a filing mistake, not a bad shot.
+ */
+function editRow_(body) {
+  requirePin_(body.pin);
+
+  var fileId = String(body.fileId || '');
+  if (!fileId) throw new Error('Missing photo id');
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    var sh   = logSheet_();
+    var rows = sh.getDataRange().getValues();
+
+    var at = -1;
+    for (var i = 1; i < rows.length; i++) {
+      if (String(rows[i][10]) === fileId) { at = i; break; }
+    }
+    if (at < 0) throw new Error('That photo is not in the log');
+
+    var row    = rows[at];
+    var oldPO  = String(row[1]);
+    var oldCat = String(row[2]);
+
+    var po = body.po == null ? oldPO : normalizePO_(body.po);
+    if (!po) throw new Error('Missing PO number');
+
+    var cat = body.category == null ? oldCat : matchCategory_(body.category);
+    if (!cat) throw new Error('Unknown category: ' + body.category);
+
+    var lat     = Number(row[3]);
+    var lng     = Number(row[4]);
+    var address = row[5];
+    var source  = row[7];
+
+    if (body.lat != null && body.lng != null) {
+      var newLat = Number(body.lat);
+      var newLng = Number(body.lng);
+      if (!isFinite(newLat) || !isFinite(newLng)) throw new Error('Bad coordinates');
+      if (!inAZ_(newLat, newLng)) throw new Error('That pin is outside Arizona');
+
+      // A pin moved by hand outranks the stamp, and the stamped address it
+      // came with is no longer where the pin sits.
+      if (newLat !== lat || newLng !== lng) {
+        lat = newLat;
+        lng = newLng;
+        source  = 'manual';
+        address = reverseGeocode_(lat, lng);
+      }
+    }
+
+    var note = body.note == null ? row[8] : String(body.note);
+    var name = String(row[9]);
+
+    // The PO and category folders are how the photos are filed, so Drive has
+    // to move with the sheet or the correction only half happens.
+    if (po !== oldPO || cat !== oldCat) {
+      var root   = DriveApp.getFolderById(getProp_('ROOT_ID'));
+      var target = findOrCreateFolder_(findOrCreateFolder_(root, po), cat);
+      var file   = DriveApp.getFileById(fileId);
+      name = renamedFile_(name, oldPO, oldCat, po, cat);
+      file.setName(name);
+      file.moveTo(target);
+    }
+
+    sh.getRange(at + 1, 2, 1, 8)
+      .setValues([[po, cat, lat, lng, address, row[6], source, note]]);
+    sh.getRange(at + 1, 10).setValue(name);
+
+    return json_({
+      ok: true, fileId: fileId, po: po, category: cat,
+      lat: lat, lng: lng, address: address, source: source, note: note,
+      fileName: name, poLooksNormal: isWellFormedPO_(po)
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Street address for a pin that was dragged by hand, so the sheet and the
+ * popup stop showing where the photo was originally stamped. Returns '' when
+ * the lookup fails — an empty address beats a wrong one.
+ */
+function reverseGeocode_(lat, lng) {
+  try {
+    var res = Maps.newGeocoder().reverseGeocode(lat, lng);
+    var r = res && res.status === 'OK' && res.results && res.results[0];
+    return r ? (r.formatted_address || '') : '';
+  } catch (err) {
+    return '';
+  }
+}
+
+/**
+ * Uploads are named PO_Category_timestamp.jpg. A corrected PO or category
+ * should show in the file name too, but only when the name actually starts
+ * with the old one — a hand-named file keeps the name it was given.
+ */
+function renamedFile_(name, oldPO, oldCat, po, cat) {
+  var from = oldPO + '_' + oldCat.replace(/\W+/g, '') + '_';
+  var to   = po + '_' + cat.replace(/\W+/g, '') + '_';
+  return name.indexOf(from) === 0 ? to + name.slice(from.length) : name;
+}
+
 /* -------------------------------------------------------------- map feed */
 
 /**
@@ -138,7 +302,7 @@ function listPoints_() {
       lat: Number(r[3]), lng: Number(r[4]),
       address: r[5], capturedAt: String(r[6]),
       source: r[7], note: r[8],
-      photo: r[11], thumb: r[12]
+      fileId: r[10], photo: r[11], thumb: r[12]
     });
   }
   return out;
