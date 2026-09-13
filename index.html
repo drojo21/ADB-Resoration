@@ -520,6 +520,13 @@ function inArizona(lat, lng) {
 
 /* ------------------------------------------------------- location fallback */
 
+var GEO_WARN = {
+  'no-match':   'Could not place that address — check the pin',
+  'city-level': 'That address only reaches the town, not the street',
+  'outside-az': 'That address lands outside Arizona',
+  'too-short':  'Address too short to place'
+};
+
 /** Ask the Apps Script geocoder to place the address we found. */
 function fallbackGeocode(shot, source) {
   if (!api) return Promise.resolve();
@@ -528,8 +535,17 @@ function fallbackGeocode(shot, source) {
     .then(function (r) { return r.json(); })
     .then(function (d) {
       if (!d || !d.ok || !d.found || !inArizona(d.lat, d.lng)) {
-        // Silence here reads as "the address was ignored", so say what happened.
-        shot.geoWarn = 'Could not place that address';
+        // Silence here reads as "the address was ignored", so say what
+        // happened — and say which failure it was. A street the geocoder
+        // cannot read, a hit that only reached the town, and a script that
+        // errored out need three different things from whoever is standing
+        // at the defect.
+        shot.geoWarn = !d || !d.ok
+          ? 'Lookup error: ' + ((d && d.error) || 'no answer from the script')
+          // An old deployment has no geocode action and answers with the map
+          // feed instead. That is a redeploy, not a bad address.
+          : d.points ? 'The web app needs redeploying — it has no geocoder'
+          : (GEO_WARN[d.reason] || 'Could not place that address');
         render();
         return;
       }
