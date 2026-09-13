@@ -59,7 +59,7 @@
   .pop .src{display:inline-block;font-size:12px;font-weight:700;padding:3px 7px;border-radius:5px;margin-top:6px}
   .src.stamp{background:#e4f2ea;color:var(--good)}
   .src.gps{background:#fdf0d9;color:#8a5a00}
-  .src.geocode{background:#e6edfa;color:var(--geo)}
+  .src.geocode,.src.filename{background:#e6edfa;color:var(--geo)}
   .src.manual{background:#e8eaee;color:var(--ink-soft)}
   .pop a.nav{
     display:block;text-align:center;margin-top:10px;padding:12px;border-radius:9px;
@@ -201,16 +201,18 @@ var TUCSON = [32.2226, -110.9747];
 // each pin says it at a glance so nobody drives out to a block-level guess
 // thinking it was read off the photo.
 var RINGS = {
-  stamp:   { color: '#fff',    weight: 2 },
-  geocode: { color: '#2a4d8f', weight: 3 },
-  gps:     { color: '#ffb020', weight: 3 },
-  manual:  { color: '#ffb020', weight: 3 }
+  stamp:    { color: '#fff',    weight: 2 },
+  geocode:  { color: '#2a4d8f', weight: 3 },
+  filename: { color: '#2a4d8f', weight: 3 },
+  gps:      { color: '#ffb020', weight: 3 },
+  manual:   { color: '#ffb020', weight: 3 }
 };
 var LABELS = {
-  stamp:   'From photo stamp',
-  geocode: 'From stamped address — block-level',
-  gps:     'Phone location — verify',
-  manual:  'Set by hand'
+  stamp:    'From photo stamp',
+  geocode:  'From stamped address — block-level',
+  filename: 'From file name — block-level',
+  gps:      'Phone location — verify',
+  manual:   'Set by hand'
 };
 
 var $ = function (id) { return document.getElementById(id); };
