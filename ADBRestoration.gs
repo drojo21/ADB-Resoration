@@ -174,75 +174,97 @@ function editRow_(body) {
   var fileId = String(body.fileId || '');
   if (!fileId) throw new Error('Missing photo id');
 
-  var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try {
-    var sh   = logSheet_();
-    var rows = sh.getDataRange().getValues();
+  // Read and do the Drive work without the lock. Moving a file takes seconds,
+  // and the lock is script-wide: held across Drive calls it stalls every photo
+  // upload behind it until they give up.
+  var found = findRow_(logSheet_(), fileId);
+  if (!found) throw new Error('That photo is not in the log');
 
-    var at = -1;
-    for (var i = 1; i < rows.length; i++) {
-      if (String(rows[i][10]) === fileId) { at = i; break; }
+  var row    = found.row;
+  var oldPO  = String(row[1]);
+  var oldCat = String(row[2]);
+
+  var po = body.po == null ? oldPO : normalizePO_(body.po);
+  if (!po) throw new Error('Missing PO number');
+
+  var cat = body.category == null ? oldCat : matchCategory_(body.category);
+  if (!cat) throw new Error('Unknown category: ' + body.category);
+
+  var lat     = Number(row[3]);
+  var lng     = Number(row[4]);
+  var address = row[5];
+  var source  = row[7];
+
+  if (body.lat != null && body.lng != null) {
+    var newLat = Number(body.lat);
+    var newLng = Number(body.lng);
+    if (!isFinite(newLat) || !isFinite(newLng)) throw new Error('Bad coordinates');
+    if (!inAZ_(newLat, newLng)) throw new Error('That pin is outside Arizona');
+
+    // A pin moved by hand outranks the stamp, and the stamped address it
+    // came with is no longer where the pin sits.
+    if (newLat !== lat || newLng !== lng) {
+      lat = newLat;
+      lng = newLng;
+      source  = 'manual';
+      address = reverseGeocode_(lat, lng);
     }
-    if (at < 0) throw new Error('That photo is not in the log');
-
-    var row    = rows[at];
-    var oldPO  = String(row[1]);
-    var oldCat = String(row[2]);
-
-    var po = body.po == null ? oldPO : normalizePO_(body.po);
-    if (!po) throw new Error('Missing PO number');
-
-    var cat = body.category == null ? oldCat : matchCategory_(body.category);
-    if (!cat) throw new Error('Unknown category: ' + body.category);
-
-    var lat     = Number(row[3]);
-    var lng     = Number(row[4]);
-    var address = row[5];
-    var source  = row[7];
-
-    if (body.lat != null && body.lng != null) {
-      var newLat = Number(body.lat);
-      var newLng = Number(body.lng);
-      if (!isFinite(newLat) || !isFinite(newLng)) throw new Error('Bad coordinates');
-      if (!inAZ_(newLat, newLng)) throw new Error('That pin is outside Arizona');
-
-      // A pin moved by hand outranks the stamp, and the stamped address it
-      // came with is no longer where the pin sits.
-      if (newLat !== lat || newLng !== lng) {
-        lat = newLat;
-        lng = newLng;
-        source  = 'manual';
-        address = reverseGeocode_(lat, lng);
-      }
-    }
-
-    var note = body.note == null ? row[8] : String(body.note);
-    var name = String(row[9]);
-
-    // The PO and category folders are how the photos are filed, so Drive has
-    // to move with the sheet or the correction only half happens.
-    if (po !== oldPO || cat !== oldCat) {
-      var root   = DriveApp.getFolderById(getProp_('ROOT_ID'));
-      var target = findOrCreateFolder_(findOrCreateFolder_(root, po), cat);
-      var file   = DriveApp.getFileById(fileId);
-      name = renamedFile_(name, oldPO, oldCat, po, cat);
-      file.setName(name);
-      file.moveTo(target);
-    }
-
-    sh.getRange(at + 1, 2, 1, 8)
-      .setValues([[po, cat, lat, lng, address, row[6], source, note]]);
-    sh.getRange(at + 1, 10).setValue(name);
-
-    return json_({
-      ok: true, fileId: fileId, po: po, category: cat,
-      lat: lat, lng: lng, address: address, source: source, note: note,
-      fileName: name, poLooksNormal: isWellFormedPO_(po)
-    });
-  } finally {
-    lock.releaseLock();
   }
+
+  var note = body.note == null ? row[8] : String(body.note);
+  var name = String(row[9]);
+
+  // The PO and category folders are how the photos are filed, so Drive has
+  // to move with the sheet or the correction only half happens.
+  if (po !== oldPO || cat !== oldCat) {
+    var root   = DriveApp.getFolderById(getProp_('ROOT_ID'));
+    var target = findOrCreateFolder_(findOrCreateFolder_(root, po), cat);
+    var file   = DriveApp.getFileById(fileId);
+    name = renamedFile_(name, oldPO, oldCat, po, cat);
+    file.setName(name);
+    file.moveTo(target);
+  }
+
+  // Now the sheet, under a lock held for two writes. The row is found again
+  // inside it: uploads append while this was working, and a row index read
+  // before the Drive calls is not one to write by.
+  withLogLock_(function (sh) {
+    var at = findRowIndex_(sh, fileId);
+    if (at < 0) throw new Error('That photo is not in the log');
+    var capturedAt = sh.getRange(at + 1, 7).getValue();   // never edited, only carried
+    sh.getRange(at + 1, 2, 1, 8)
+      .setValues([[po, cat, lat, lng, address, capturedAt, source, note]]);
+    sh.getRange(at + 1, 10).setValue(name);
+  });
+
+  return json_({
+    ok: true, fileId: fileId, po: po, category: cat,
+    lat: lat, lng: lng, address: address, source: source, note: note,
+    fileName: name, poLooksNormal: isWellFormedPO_(po)
+  });
+}
+
+/** The log row for a photo, by the one column nothing else rewrites. */
+function findRow_(sh, fileId) {
+  var rows = sh.getDataRange().getValues();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][10]) === fileId) return { at: i, row: rows[i] };
+  }
+  return null;
+}
+
+/**
+ * The same row, reading only the File ID column. Used under the lock, where
+ * the whole log is thirteen columns of reading nobody is waiting to use.
+ */
+function findRowIndex_(sh, fileId) {
+  var last = sh.getLastRow();
+  if (last < 2) return -1;
+  var ids = sh.getRange(2, 11, last - 1, 1).getValues();
+  for (var i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]) === fileId) return i + 1;   // past the header row
+  }
+  return -1;
 }
 
 /**
@@ -494,9 +516,33 @@ function logSheet_() {
 }
 
 function appendRow_(values) {
+  withLogLock_(function (sh) { sh.appendRow(values); });
+}
+
+var LOCK_MS = 30000;
+
+/**
+ * Runs fn against the log sheet with the script lock held, and holds it for no
+ * longer than that: opening the spreadsheet is itself slow, so it happens
+ * before the lock is taken. Callers doing Drive work do it outside this.
+ *
+ * A timeout here is a queue, not a fault — the raw LockService message says
+ * "another process was holding the lock", which reads like a crash to whoever
+ * is standing in the street with a photo to send.
+ */
+function withLogLock_(fn) {
+  var sh = logSheet_();
   var lock = LockService.getScriptLock();
-  lock.waitLock(20000);
-  try { logSheet_().appendRow(values); } finally { lock.releaseLock(); }
+  try {
+    lock.waitLock(LOCK_MS);
+  } catch (err) {
+    throw new Error('The log was busy — wait a few seconds and try again');
+  }
+  try {
+    return fn(sh);
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function findOrCreateFolder_(parent, name) {
