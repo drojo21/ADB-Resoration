@@ -163,6 +163,7 @@
 
   <div id="shots"></div>
   <p class="empty" id="empty">No photos yet. Pick a PO and work type first.</p>
+  <p class="hint" id="apiLine" hidden></p>
 </main>
 
 <footer>
@@ -193,7 +194,9 @@ var JPEG_Q   = 0.85;
 var OCR_W    = 1400;      // width the stamp crop is scaled to before OCR
 var GEO_MS   = 8000;      // start GPS as a hedge; a later address still wins
 
-var api = localStorage.getItem('adb.api') || '';
+var params = new URLSearchParams(location.search);
+var api = params.get('api') || localStorage.getItem('adb.api') || '';
+if (api && api !== localStorage.getItem('adb.api')) localStorage.setItem('adb.api', api);
 var shots = [];
 var ocrWorker = null;
 var pinTarget = null, map = null, marker = null;
@@ -213,9 +216,43 @@ $('saveApi').addEventListener('click', function () {
   localStorage.setItem('adb.api', api);
   $('setup').hidden = true;
   say('Saved.');
+  showApiLine();
+  refreshJobLabel();   // the photo button is disabled until there is an api
   loadPOs();
 });
 
+/**
+ * Which web app this phone is talking to, and a way to change it. A new Apps
+ * Script deployment gets a new /exec URL, and a phone still pointed at the old
+ * one gets answers from old code — with no way to tell, and until now no way
+ * to fix it short of clearing the browser's storage.
+ */
+function showApiLine() {
+  var line = $('apiLine');
+  line.innerHTML = '';
+  line.hidden = !api;
+  if (!api) return;
+
+  line.appendChild(document.createTextNode('Web app ' + shortApi(api) + ' '));
+  var b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'mini';
+  b.textContent = 'Change';
+  b.addEventListener('click', function () {
+    $('apiUrl').value = api;
+    $('setup').hidden = false;
+    $('apiUrl').focus();
+  });
+  line.appendChild(b);
+}
+
+/** The deployment id is what differs between two deployments of one script. */
+function shortApi(u) {
+  var m = String(u).match(/\/s\/([^/]+)\//);
+  return m ? '…' + m[1].slice(-10) : String(u).slice(-24);
+}
+
+showApiLine();
 $('po').value = localStorage.getItem('adb.po') || '';
 var savedCat = localStorage.getItem('adb.cat') || '';
 if (savedCat) setCategory(savedCat);
